@@ -172,28 +172,45 @@ class ClientsSession:
             return False
 
     async def test_time(self):
-        url = "https://ip.ddnspod.com/timestamp"
         proxy_str = get_proxy_str(self.proxy)
-        try:
-            async with httpx.AsyncClient(http2=True, proxy=proxy_str) as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    timestamp = int(resp.content.decode())
-                else:
-                    logger.warning(f"世界时间接口异常, 系统时间检测将跳过, 敬请注意. 程序将继续运行.")
-                    return False
-                nowtime = datetime.now(timezone.utc).timestamp()
-                if abs(nowtime - timestamp / 1000) > 30:
-                    logger.warning(
-                        f"您的系统时间设置不正确, 与世界时间差距过大, 可能会导致连接失败, 敬请注意. 程序将继续运行."
-                    )
-        except httpx.HTTPError:
-            logger.warning(f"检测世界时间发生错误, 时间检测将被跳过.")
-            return False
-        except Exception as e:
-            logger.warning(f"检测世界时间发生错误, 时间检测将被跳过.")
-            show_exception(e)
-            return False
+        nowtime = datetime.now(timezone.utc).timestamp()
+        urls = (
+            "https://ip.ddnspod.com/timestamp",  # 毫秒时间戳
+            "https://www.cloudflare.com/cdn-cgi/trace",  # 文本中包含 UNIX 秒时间戳
+        )
+
+        async with httpx.AsyncClient(http2=True, proxy=proxy_str, timeout=20) as client:
+            for url in urls:
+                try:
+                    resp = await client.get(url)
+                    if resp.status_code != 200:
+                        continue
+
+                    if "ddnspod" in url:
+                        timestamp = int(resp.content.decode()) / 1000
+                    else:
+                        trace = resp.text
+                        ts_line = next(
+                            (line for line in trace.splitlines() if line.startswith("ts=")),
+                            None,
+                        )
+                        if not ts_line:
+                            continue
+                        timestamp = int(ts_line.split("=", maxsplit=1)[1])
+
+                    if abs(nowtime - timestamp) > 30:
+                        logger.warning(
+                            f"您的系统时间设置不正确, 与世界时间差距过大, 可能会导致连接失败, 敬请注意. 程序将继续运行."
+                        )
+                    return True
+                except (httpx.HTTPError, ValueError, UnicodeDecodeError):
+                    continue
+                except Exception as e:
+                    logger.debug(f"检测世界时间接口异常 ({url}): {e}")
+                    continue
+
+        logger.warning(f"检测世界时间发生错误, 时间检测将被跳过.")
+        return False
 
     async def get_session_str_from_telethon(self, account: TelegramAccount):
         from telethon import TelegramClient
